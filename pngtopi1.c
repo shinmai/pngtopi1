@@ -116,6 +116,7 @@ enum {
 };
 
 static uint8_t opt_col = CQ_TBD; /* mask used color bits (default TBD)*/
+static uint8_t opt_fid = 6;      /* forced degas id */
 static uint8_t opt_out = PXX;    /* {PXX,PIX,PCX,PNG} (see enum) */
 static  int8_t opt_bla = 0;      /* blah blah level */
 static uint8_t opt_dir = 0;      /* same dir versus current dir */
@@ -151,8 +152,9 @@ struct mypng_s {
 typedef struct mypix_s mypix_t;
 struct mypix_s {
   IMG_COMMON;
-  uint8_t bits[32034];           /* uncompressed (include header)  */
+  uint8_t bits[];
 };
+
 
 typedef union myimg_s myimg_t;
 union myimg_s {
@@ -923,14 +925,35 @@ static myimg_t * mypix_alloc(int id, char * path)
 
   assert( (uint_t) id < 6u );
 
-  img = mf_malloc(sizeof(mypix_t));
+  size_t totalSize = sizeof(mypix_t) + degas[id].minsz * sizeof(uint8_t);
+  img = mf_malloc(totalSize);
   if (img) {
     strcpy((char*)img->pix.magic, degas[id].name);
     img->pix.w = degas[id].w;
     img->pix.h = degas[id].h;
     img->pix.d = degas[id].d;
     img->pix.c = degas[id].c;
-    img->pix.path = path ? path :"<mypix>";
+    img->pix.path = path ? path : "<mypix>";
+    img->pix.type = degas[id].rle ? PCX : PIX;
+  }
+  return img;
+}
+
+static myimg_t * mypix_alloc_forced(int id, char * path, int w, int h)
+{
+  myimg_t * img;
+
+  assert( (uint_t) id < 6u );
+
+  size_t totalSize = sizeof(mypix_t) + w * h * sizeof(uint8_t);
+  img = mf_malloc(totalSize);
+  if (img) {
+    strcpy((char*)img->pix.magic, degas[id].name);
+    img->pix.w = w;
+    img->pix.h = h;
+    img->pix.d = degas[id].d;
+    img->pix.c = degas[id].c;
+    img->pix.path = path ? path : "<mypix>";
     img->pix.type = degas[id].rle ? PCX : PIX;
   }
   return img;
@@ -1091,6 +1114,8 @@ static myimg_t * mypix_from_png(mypng_t * png)
     if (png->w == degas[id].w && png->h == degas[id].h)
       break;
 
+  if(opt_fid < id) id = opt_fid;
+
   if (id == 6) {
     emsg("incompatible image dimension <%dx%d> -- %s\n",
          png->w,png->h,png->path);
@@ -1169,8 +1194,14 @@ static myimg_t * mypix_from_png(mypng_t * png)
 
   assert( (( (((15+png->w)>>4)<<1) << log2plans) * png->h) == 32000 );
 
-  if (img = mypix_alloc(id, png->path), !img)
-    return 0;
+  if(opt_fid<6) {
+    if (img = mypix_alloc_forced(id, png->path, png->w, png->h), !img)
+      return 0;
+  }
+  else {
+    if (img = mypix_alloc(id, png->path), !img)
+      return 0;
+  }
 
   bits = img->pix.bits;
 
@@ -1231,7 +1262,7 @@ static myimg_t * mypix_from_png(mypng_t * png)
       }
     }
   }
-  assert( bits == img->pix.bits+32034 );
+  //assert( bits == img->pix.bits+32034 );
 
   return img;
 }
@@ -1602,7 +1633,7 @@ int main(int argc, char *argv[])
   ecode = E_ARG;
 
   for (;;) {
-    static const char sopts[] = "hV" "vq" "c:ezr" "d";
+    static const char sopts[] = "hV" "vq" "c:ef:zr" "d";
     static struct option lopts[] = {
       {"help",    no_argument,      0, 'h'},
       {"usage",   no_argument,      0, 'h'},
@@ -1615,6 +1646,7 @@ int main(int argc, char *argv[])
       {"ste",     no_argument,      0, 'e'},
       {"pcx",     no_argument,      0, 'z'},
       {"pix",     no_argument,      0, 'r'},
+      {"format",   required_argument,0, 'f'},
       /**/
       {"same-dir",no_argument,      0, 'd'},
       /**/
@@ -1657,6 +1689,21 @@ int main(int argc, char *argv[])
       }
     } break;
     case 'e': opt_col = CQ_STE|CQ_LBR; break;
+
+    case 'f': {
+      int i;
+      static char formats[][4] = { "pi1","pc1","pi2","pc2","pi3","pc3" };
+      for ( i=0; i<sizeof(formats)/sizeof(*formats); ++i ) {
+        printf("%s",formats[i]);
+        if ( ! strcasecmp(formats[i], optarg ) ) {
+          opt_fid = i; i=-1; break;
+        }
+      }
+      if (i>0) {
+        emsg("invalid argument for -f/--format -- `%s'\n",optarg);
+        goto exit;
+      }
+    } break;
 
     case 'z':
       if (opt_out == PXX || opt_out == PCX)
@@ -1939,6 +1986,7 @@ static void print_usage(int verbose)
     " -v --verbose        Print more messages.\n"
     " -c --color=XY       Select color conversion method (see below).\n"
     " -e --ste            Alias for --color=4r.\n"
+    " -f --format=F       Force a format, ignoring the image dimensions.\n"
     " -z --pcx            Force output as a pc1, pc2 or pc3.\n"
     " -r --pix            Force output as a pi1, pi2 or pi3.\n"
     " -d --same-dir       Automatic save path includes <input> path.\n"
